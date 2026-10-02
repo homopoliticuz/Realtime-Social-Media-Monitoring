@@ -111,3 +111,46 @@ def test_sources_settings_admin_only_and_validated(admin_client):
     r = c.post("/api/auth/login", json={"username": "analyst", "password": "analyst-pass-123"}, headers=H)
     c.headers["Authorization"] = f"Bearer {r.json()['token']}"
     assert c.get("/api/settings/sources").status_code == 403
+
+
+def test_watchlist_links_are_normalized(monkeypatch):
+    from dozor.config import load_settings
+
+    monkeypatch.setenv("DOZOR_VK_DOMAINS", "https://vk.com/club123,@durov, vk.ru/public_news/ ,club123")
+    monkeypatch.setenv("DOZOR_MASTODON_INSTANCES", "https://Mastodon.Online/@someone,mastodon.social/,mastodon.social")
+    monkeypatch.setenv("DOZOR_TWITCH_CHANNELS", "https://www.twitch.tv/SomeStreamer/videos,#other,@third")
+    monkeypatch.setenv("DOZOR_DISCORD_CHANNEL_IDS",
+                       "https://discord.com/channels/111111111111111111/222222222222222222,333333333333333333")
+    s = load_settings()
+    assert s.vk_domains == ["club123", "durov", "public_news"]
+    assert s.mastodon_instances == ["mastodon.online", "mastodon.social"]
+    assert s.twitch_channels == ["somestreamer", "other", "third"]
+    assert s.discord_channel_ids == ["222222222222222222", "333333333333333333"]
+
+
+def test_mastodon_link_in_settings_builds_valid_request(work_settings, monkeypatch):
+    import asyncio
+
+    from dozor.config import refresh_settings
+    from dozor.connectors.base import SearchPlan
+    from dozor.connectors.platforms import MastodonConnector
+    from dozor.text.expansion import expand_query
+
+    monkeypatch.setenv("DOZOR_MASTODON_INSTANCES", "https://mastodon.online/explore")
+    refresh_settings(work_settings)
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json=[])
+
+    async def run():
+        plan = SearchPlan(expansion=expand_query("kill", ["en"]), max_requests=1)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            async def progress(_msg):
+                return None
+            return await MastodonConnector(work_settings).fetch(plan, client, progress)
+
+    res = asyncio.run(run())
+    assert not res.errors
+    assert seen and seen[0].startswith("https://mastodon.online/api/v1/timelines/tag/")

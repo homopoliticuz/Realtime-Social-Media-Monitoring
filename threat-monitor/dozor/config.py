@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,38 @@ def _load_dotenv(path: Path) -> None:
 def _list(name: str) -> list[str]:
     value = os.environ.get(name, "")
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _vk_domain(value: str) -> str:
+    """vk.com/club123, https://vk.ru/durov, @durov → club123, durov."""
+    m = re.search(r"vk\.(?:com|ru)/([A-Za-z0-9_.]+)", value)
+    return m.group(1) if m else value.strip().lstrip("@").strip("/")
+
+
+def _host(value: str) -> str:
+    """https://mastodon.social/@user → mastodon.social."""
+    return re.sub(r"^[a-z]+://", "", value.strip(), flags=re.I).split("/")[0].strip().lower()
+
+
+def _twitch_channel(value: str) -> str:
+    """https://www.twitch.tv/name, #name, @name → name."""
+    v = re.sub(r"^(?:https?://)?(?:www\.|m\.)?twitch\.tv/", "", value.strip(), flags=re.I)
+    return v.split("/")[0].split("?")[0].lstrip("#@").lower()
+
+
+def _discord_channel(value: str) -> str:
+    """https://discord.com/channels/<сервер>/<канал> → <канал>."""
+    ids = re.findall(r"\d{15,22}", value)
+    return ids[-1] if ids else value.strip()
+
+
+def _normalized(items: list[str], fn) -> list[str]:
+    out: list[str] = []
+    for item in items:
+        v = fn(item)
+        if v and v not in out:
+            out.append(v)
+    return out
 
 
 def _int(name: str, default: int) -> int:
@@ -127,11 +160,12 @@ def load_settings() -> Settings:
         env_file=env_path,
         telegram_pages=max(1, min(_int("DOZOR_TELEGRAM_PAGES", 2), 10)),
         telegram_channels=_list("DOZOR_TELEGRAM_CHANNELS"),
-        vk_domains=_list("DOZOR_VK_DOMAINS"),
+        vk_domains=_normalized(_list("DOZOR_VK_DOMAINS"), _vk_domain),
         rss_feeds=_list("DOZOR_RSS_FEEDS"),
-        mastodon_instances=_list("DOZOR_MASTODON_INSTANCES") if "DOZOR_MASTODON_INSTANCES" in os.environ else ["mastodon.social"],
-        twitch_channels=_list("DOZOR_TWITCH_CHANNELS"),
-        discord_channel_ids=_list("DOZOR_DISCORD_CHANNEL_IDS"),
+        mastodon_instances=_normalized(_list("DOZOR_MASTODON_INSTANCES"), _host)
+        if "DOZOR_MASTODON_INSTANCES" in os.environ else ["mastodon.social"],
+        twitch_channels=_normalized(_list("DOZOR_TWITCH_CHANNELS"), _twitch_channel),
+        discord_channel_ids=_normalized(_list("DOZOR_DISCORD_CHANNEL_IDS"), _discord_channel),
         youtube_channel_ids=_list("DOZOR_YOUTUBE_CHANNEL_IDS"),
         twitch_chat_capture_seconds=_int("DOZOR_TWITCH_CHAT_CAPTURE_SECONDS", 0),
     )
