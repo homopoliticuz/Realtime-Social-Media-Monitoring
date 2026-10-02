@@ -28,7 +28,8 @@ from .analysis.taxonomy import (
     SEVERITIES,
     THREAT_CATEGORIES,
 )
-from .config import BASE_DIR, Settings, load_settings
+from . import envfile
+from .config import BASE_DIR, Settings, load_settings, refresh_settings
 from .connectors.demo import demo_items
 from .connectors.registry import build_connectors
 from .data.demo import DEMO_NOTICE
@@ -116,13 +117,21 @@ class RetentionBody(BaseModel):
     values: dict[str, int]
 
 
+class SourcesBody(BaseModel):
+    values: dict[str, str | int | bool | None] = {}
+    clear: list[str] = []
+
+
 # ------------------------------------------------------------------ фабрика
 def create_app(settings: Settings | None = None, db: Database | None = None, transport=None) -> FastAPI:
     settings = settings or load_settings()
     db = db or Database(settings.db_path)
     connectors = build_connectors(settings)
-    analyzer = build_analyzer(settings)
-    pipeline = Pipeline(db, settings, connectors, analyzer, transport)
+    pipeline = Pipeline(db, settings, connectors, build_analyzer(settings), transport)
+    if not settings.demo_enabled:
+        removed = repo.purge_demo(db)
+        if removed:
+            audit.log(db, "system", None, "purge", details={"demo_incidents_removed": removed})
 
     async def retention_loop():
         while True:
@@ -241,8 +250,9 @@ def create_app(settings: Settings | None = None, db: Database | None = None, tra
             "countries": geo.country_options(),
             "roles": security.ROLES,
             "demo_notice": DEMO_NOTICE,
-            "llm_enabled": analyzer is not None,
-            "llm_model": settings.llm_model if analyzer else None,
+            "demo_enabled": settings.demo_enabled,
+            "llm_enabled": pipeline.analyzer is not None,
+            "llm_model": settings.llm_model if pipeline.analyzer else None,
             "geo_disclaimer": geo.DISCLAIMER,
             "retention_labels": repo.RETENTION_LABELS,
         }
@@ -447,9 +457,9 @@ def create_app(settings: Settings | None = None, db: Database | None = None, tra
     @app.post("/api/analyze")
     def analyze(body: AnalyzeBody, user: security.User = Depends(require("analyze_text"))):
         a = assess(body.text)
-        if analyzer and (a.is_threat or a.scores):
+        if pipeline.analyzer and (a.is_threat or a.scores):
             try:
-                a = merge_llm(a, analyzer.classify(body.text, body.context))
+                a = merge_llm(a, pipeline.analyzer.classify(body.text, body.context))
             except Exception as exc:  # noqa: BLE001
                 a.explanation.append({"kind": "limitation", "text": f"Второй классификатор недоступен: {exc}"})
         audit.log(db, user.username, user.role, "analyze_text", details={"chars": len(body.text), "category": a.category,
@@ -469,6 +479,8 @@ def create_app(settings: Settings | None = None, db: Database | None = None, tra
 
     @app.post("/api/demo/load")
     def demo_load(user: security.User = Depends(require("manage_settings"))):
+        if not settings.demo_enabled:
+            raise HTTPException(404, "Учебный режим выключен")
         summary = pipeline.ingest(demo_items(), user)
         audit.log(db, user.username, user.role, "demo_load", details=summary["counts"])
         return {"counts": summary["counts"]}
@@ -538,6 +550,25 @@ def create_app(settings: Settings | None = None, db: Database | None = None, tra
     @app.get("/api/audit/verify")
     def audit_verify(user: security.User = Depends(require("audit"))):
         return audit.verify(db)
+
+    @app.get("/api/settings/sources")
+    def sources_get(user: security.User = Depends(require("manage_settings"))):
+        data = envfile.read_values()
+        data["env_file"] = str(settings.env_file)
+        return data
+
+    @app.put("/api/settings/sources")
+    def sources_put(body: SourcesBody, user: security.User = Depends(require("manage_settings"))):
+        try:
+            changed = envfile.save(settings.env_file, body.values, body.clear)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        refresh_settings(settings)
+        if {"DOZOR_LLM_ENABLED", "ANTHROPIC_API_KEY"} & set(changed):
+            pipeline.analyzer = build_analyzer(settings)
+        # В журнал — только имена полей, без значений и секретов
+        audit.log(db, user.username, user.role, "settings_change", "settings", "sources", {"changed": changed})
+        return {"changed": changed, "connectors": [c.describe() for c in connectors.values()]}
 
     @app.get("/api/settings/retention")
     def retention_get(user: security.User = Depends(require("view"))):

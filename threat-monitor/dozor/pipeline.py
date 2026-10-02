@@ -335,6 +335,10 @@ class Pipeline:
             await job.emit(stage, status, message, **extra)
 
         coverage = self._coverage(plan_rows, connector_stats)
+        final = summary["final"]
+        if coverage["polled"] and set(coverage["failed"]) >= set(coverage["polled"]):
+            final += (" Ни один источник не ответил: проверьте подключение к интернету и настройки источников "
+                      "(Администрирование → Источники и ключи доступа).")
         job.stats = {
             "connectors": connector_stats,
             "plan": plan_rows,
@@ -342,7 +346,7 @@ class Pipeline:
             "coverage": coverage,
             "expansion": expansion.to_dict(),
         }
-        await job.emit("done", "done", summary["final"], counts=summary["counts"], coverage=coverage, search_id=job.id)
+        await job.emit("done", "done", final, counts=summary["counts"], coverage=coverage, search_id=job.id)
         await job.finish("done")
         self._persist(job, "done")
         audit.log(self.db, job.user.username, job.user.role, "search", "search", job.id, {
@@ -416,7 +420,7 @@ class Pipeline:
             prepared.append((it, masked, pii_counts, f))
         events.append((
             "normalize", "done",
-            "Языки: " + ", ".join(f"{LANGUAGES.get(k, k)} — {v}" for k, v in sorted(langs_seen.items(), key=lambda kv: -kv[1]))
+            ("Материалов для обработки нет" if not langs_seen else "Языки: ") + ", ".join(f"{LANGUAGES.get(k, k)} — {v}" for k, v in sorted(langs_seen.items(), key=lambda kv: -kv[1]))
             + (f"; обфускация снята в {obfuscated}" if obfuscated else ""),
             {"languages": langs_seen},
         ))

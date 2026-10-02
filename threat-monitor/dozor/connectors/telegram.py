@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from html.parser import HTMLParser
 from urllib.parse import quote
@@ -205,24 +206,54 @@ class TelegramWebConnector(Connector):
                 continue
             items, _ = parse_tme_html(html or "")
             res.items.extend(items)
-        queries = plan.expansion.platform_queries(max_queries=max(1, budget // max(1, len(channels))))
+        # Для каждого канала: свежая лента (несколько страниц) — её проверяет
+        # локальный многоязычный поиск со всеми словоформами — плюс поиск
+        # внутри канала по главным терминам запроса.
+        pages = self.settings.telegram_pages
+        terms_per_channel = 3 if plan.expansion.terms else 0
+        budget = max(budget, min(400, len(channels) * (pages + terms_per_channel)))
+        terms = [q for _, q in plan.expansion.platform_queries(max_queries=terms_per_channel)]
+        seen: set[str] = set()
+
+        async def get_page(ch: str, label: str, url: str) -> list[RawItem] | None:
+            nonlocal budget
+            budget -= 1
+            res.requests += 1
+            res.queries.append(f"@{ch}: {label}")
+            await progress(f"Telegram: @{ch} — {label}")
+            html, err = await get_text(client, url)
+            await asyncio.sleep(0.25)  # бережная частота запросов
+            if err:
+                res.errors.append(f"@{ch}: {err}")
+                return None
+            items, _ = parse_tme_html(html or "")
+            fresh = [i for i in items if i.external_id not in seen]
+            seen.update(i.external_id for i in fresh)
+            res.items.extend(i for i in fresh if plan.in_range(i.published_at))
+            return items
+
         for ch in channels:
-            terms = [q for _, q in queries] or [None]
+            if budget <= 0:
+                res.notes.append("Достигнут лимит запросов: часть каналов не опрошена (увеличьте лимит в настройках)")
+                break
+            before = None
+            for page in range(pages):
+                if budget <= 0:
+                    break
+                url = f"https://t.me/s/{ch}" + (f"?before={before}" if before else "")
+                items = await get_page(ch, f"лента, стр. {page + 1}", url)
+                if not items:
+                    break
+                ids = [int(i.external_id.split("/")[-1]) for i in items if i.external_id.split("/")[-1].isdigit()]
+                oldest = min((i.published_at or "" for i in items), default="")
+                if not ids or plan.before_start(oldest):
+                    break
+                before = min(ids)
             for term in terms:
                 if budget <= 0:
-                    res.notes.append("Достигнут лимит запросов: часть вариантов запроса не отправлена")
                     break
-                url = f"https://t.me/s/{ch}" + (f"?q={quote(term)}" if term else "")
-                await progress(f"Telegram: @{ch}" + (f" — «{term}»" if term else ""))
-                html, err = await get_text(client, url)
-                budget -= 1
-                res.requests += 1
-                res.queries.append(f"@{ch}: {term or 'лента'}")
-                if err:
-                    res.errors.append(f"@{ch}: {err}")
+                if await get_page(ch, f"поиск «{term}»", f"https://t.me/s/{ch}?q={quote(term)}") is None:
                     break
-                items, _ = parse_tme_html(html or "")
-                res.items.extend(i for i in items if plan.in_range(i.published_at))
         return res
 
 

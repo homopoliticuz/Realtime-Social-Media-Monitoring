@@ -25,7 +25,9 @@ def cmd_init(args, settings, db: Database) -> None:
         pw = args.admin_password or _password()
         security.create_user(db, "admin", pw, "admin")
         created.append(("admin", "admin", pw))
-    if args.demo:
+    if args.demo and not settings.demo_enabled:
+        print("Учебный режим выключен: демо-данные не загружаются (включается переменной DOZOR_DEMO=1).")
+    elif args.demo:
         existing = {u["username"] for u in security.list_users(db)}
         for name, role in (("analyst", "analyst"), ("supervisor", "supervisor"), ("viewer", "viewer")):
             if name not in existing:

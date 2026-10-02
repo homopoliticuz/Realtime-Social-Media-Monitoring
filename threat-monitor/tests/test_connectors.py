@@ -55,8 +55,11 @@ def test_telegram_web_fetch_with_mock_transport(settings):
             return await conn.fetch(plan, client, _noop)
 
     res = asyncio.run(run())
-    assert res.items and res.requests >= 1
-    assert seen[0].startswith("https://t.me/s/testchan?q=")
+    assert res.items and res.requests >= 2
+    assert seen[0] == "https://t.me/s/testchan"  # свежая лента канала
+    assert any(u.startswith("https://t.me/s/testchan?before=101") for u in seen)  # следующая страница
+    assert any("?q=" in u for u in seen)  # поиск внутри канала
+    assert len({i.external_id for i in res.items}) == len(res.items)  # без повторов
 
 
 def test_vk_parsing_and_repost_evidence(settings, monkeypatch):

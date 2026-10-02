@@ -507,6 +507,18 @@ def delete_incident(db: Database, iid: str) -> bool:
     return True
 
 
+def purge_demo(db: Database) -> int:
+    """Удаляет демонстрационные материалы (рабочий режим)."""
+    with db.connect() as conn:
+        ids = [r["id"] for r in conn.execute("SELECT id FROM incidents WHERE is_demo = 1").fetchall()]
+    for iid in ids:
+        delete_incident(db, iid)
+    with db.connect() as conn:
+        conn.execute("DELETE FROM edges WHERE is_demo = 1")
+        conn.execute("DELETE FROM materials WHERE is_demo = 1")
+    return len(ids)
+
+
 def purge_expired(db: Database) -> dict:
     policy = retention_policy(db)
     now = now_iso()

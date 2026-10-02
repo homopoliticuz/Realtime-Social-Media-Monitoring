@@ -25,7 +25,7 @@ const state = {
   meta: null,
   connectors: [],
   tab: "incidents",
-  filters: defaultFilters(),
+  filters: null,
   search: null,
   timelineField: "published",
   timelineTable: false,
@@ -36,9 +36,10 @@ const state = {
 };
 
 function defaultFilters() {
+  const demoMode = state.meta && state.meta.demo_enabled;
   return {
     priority: [], category: "", status: "", platform: "", lang: "", country: "", q: "", include_non_threat: false,
-    requires_review: false, demo: "include", date_from: "", date_to: "", search_id: "", day: "", sort: "priority", offset: 0,
+    requires_review: false, demo: demoMode ? "include" : "exclude", date_from: "", date_to: "", search_id: "", day: "", sort: "priority", offset: 0,
   };
 }
 
@@ -47,7 +48,7 @@ function defaultSearch() {
   return {
     query: "", topics: [], languages: [...m.parallel_default, ...m.regional], date_from: "", date_to: "", countries: [],
     material_langs: [], source_url: "", connectors: state.connectors.filter((c) => usable(c) && c.name !== "demo").map((c) => c.name),
-    include_demo: state.stats && state.stats.demo_incidents > 0, purpose: PURPOSES[0], mode: "all",
+    include_demo: false, purpose: PURPOSES[0], mode: "all",
   };
 }
 
@@ -127,6 +128,7 @@ async function loadApp() {
   state.meta = meta;
   state.connectors = connectors;
   state.stats = stats;
+  state.filters = defaultFilters();
   state.search = defaultSearch();
   renderShell();
 }
@@ -343,8 +345,11 @@ function renderFilters() {
     c.addEventListener("change", () => { f[key] = c.checked; f.offset = 0; refresh(); });
     return h("label", { class: "check small" }, c, label);
   };
-  const demo = sel("demo", "Демо-данные", [["include", "Демо: включать"], ["exclude", "Демо: скрыть"], ["only", "Только демо"]]);
-  demo.value = f.demo;
+  let demo = null;
+  if (m.demo_enabled) {
+    demo = sel("demo", "Демо-данные", [["include", "Демо: включать"], ["exclude", "Демо: скрыть"], ["only", "Только демо"]]);
+    demo.value = f.demo;
+  }
   add(bar, prio,
     sel("category", "Категория", Object.entries(m.categories)),
     sel("status", "Статус проверки", Object.entries(m.statuses)),
@@ -368,7 +373,7 @@ async function renderKpis() {
   const f = state.filters;
   const stats = await api.get(`/api/stats${qs({ demo: f.demo })}`);
   state.stats = stats;
-  refs.demoBadge.classList.toggle("hidden", !(stats.demo_incidents > 0));
+  refs.demoBadge.classList.toggle("hidden", !(state.meta.demo_enabled && stats.demo_incidents > 0));
   const box = clear(refs.kpis);
   const hero = h("button", { class: "tile hero", type: "button", onclick: () => { f.requires_review = true; renderFilters(); refresh(); } },
     h("span", { class: "label" }, "⚑ Требуют обязательной проверки человеком"), h("span", { class: "value", text: fmtNum(stats.pending_mandatory_review) }));
@@ -434,10 +439,11 @@ async function renderIncidents(c) {
     h("div", { class: "muted", text: `Найдено карточек: ${fmtNum(data.total)}` + (f.include_non_threat ? " (включая материалы без угроз)" : "") }),
     sortSelect()));
   if (!data.items.length) {
-    c.appendChild(h("div", { class: "empty" },
-      h("p", { text: "Карточек по выбранным фильтрам нет." }),
-      state.stats && state.stats.total_materials === 0
-        ? h("p", { class: "small", text: "База пуста: выполните поиск по подключённым источникам или включите демонстрационные данные (python -m dozor init --demo)." }) : null));
+    if (state.stats && state.stats.total_materials === 0) {
+      c.appendChild(renderOnboarding());
+      return;
+    }
+    c.appendChild(h("div", { class: "empty" }, h("p", { text: "Карточек по выбранным фильтрам нет." })));
     return;
   }
   const list = h("div", { class: "cards" }, data.items.map(cardEl));
@@ -833,7 +839,8 @@ function renderSources(c) {
       h("td", { class: "small", text: (cn.capabilities || []).join(", ") }),
       h("td", { class: "small" }, h("ul", { style: { margin: 0, paddingLeft: "16px" } }, (cn.limitations || []).map((l) => h("li", { text: l }))))))));
   c.appendChild(h("div", { class: "panel" }, h("h3", { text: "Подключение источников" }),
-    h("p", { class: "small muted", text: "Состояние отражает фактическую конфигурацию. Неподключённые платформы не опрашиваются и не изображаются как охваченные. Ключи задаются в файле .env (см. docs/SOURCES.md)." }),
+    h("p", { class: "small muted", text: "Состояние отражает фактическую конфигурацию. Неподключённые платформы не опрашиваются и не изображаются как охваченные." }),
+    can("manage_settings") ? h("p", {}, h("button", { class: "btn primary", text: "Подключить источники и ключи", onclick: openSourceSettings })) : null,
     table));
 }
 
@@ -904,15 +911,121 @@ async function renderAudit(c) {
 }
 
 // ------------------------------------------------------------------ администрирование
+function openSourceSettings() {
+  state.tab = "admin";
+  renderTabs();
+  renderTab().then(() => {
+    const el = document.getElementById("source-settings");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
+async function saveSources(values, clearList = []) {
+  const r = await api.put("/api/settings/sources", { values, clear: clearList });
+  state.connectors = r.connectors;
+  renderSidebar();
+  return r;
+}
+
+function renderSourceSettings(data) {
+  const box = h("div", { class: "panel", id: "source-settings" },
+    h("h3", { text: "Источники и ключи доступа" }),
+    h("p", { class: "small muted", text: "Изменения применяются сразу, без перезапуска. Значения хранятся в файле .env рядом с программой. Сохранённые ключи не показываются — чтобы заменить ключ, введите новый; пустое поле оставляет прежний." }));
+  const inputs = {};
+  const clearSet = new Set();
+  for (const g of data.groups) {
+    const fieldsBox = h("div", { class: "stack" });
+    for (const f of g.fields) {
+      let input;
+      if (f.kind === "list") {
+        input = h("textarea", { rows: 3, placeholder: "по одному на строку", style: { minHeight: "70px" } });
+        input.value = f.value || "";
+      } else if (f.kind === "bool") {
+        input = h("input", { type: "checkbox", checked: f.value === "1" || null });
+      } else if (f.kind === "int") {
+        input = h("input", { type: "number", min: 0, value: f.value || "", style: { width: "140px" } });
+      } else {
+        input = h("input", { type: f.kind === "secret" ? "password" : "text", value: f.kind === "secret" ? "" : (f.value || ""),
+          autocomplete: "off", placeholder: f.kind === "secret" ? (f.is_set ? `задан (${f.hint}) — введите новый, чтобы заменить` : "не задан") : "" });
+      }
+      inputs[f.name] = { input, field: f };
+      const clearBtn = f.kind === "secret" && f.is_set
+        ? h("button", { class: "btn sm ghost", type: "button", text: "удалить ключ", onclick: (e) => {
+          clearSet.add(f.name); e.target.textContent = "будет удалён при сохранении"; e.target.disabled = true;
+        } }) : null;
+      fieldsBox.appendChild(f.kind === "bool"
+        ? h("label", { class: "check" }, input, h("span", {}, h("b", { text: f.label }), f.help ? h("div", { class: "small muted", text: f.help }) : null))
+        : h("label", { class: "field" }, h("span", { class: "row" }, h("b", { text: f.label }), clearBtn), input,
+          f.help ? h("span", { class: "small muted", text: f.help }) : null));
+    }
+    box.appendChild(details(g.label, g.id === "watch", fieldsBox));
+  }
+  const status = h("span", { class: "small muted" });
+  box.appendChild(h("div", { class: "row", style: { marginTop: "12px" } },
+    h("button", { class: "btn primary", text: "Сохранить и применить", onclick: async () => {
+      const values = {};
+      for (const [name, { input, field }] of Object.entries(inputs)) {
+        values[name] = field.kind === "bool" ? (input.checked ? "1" : "0") : input.value;
+      }
+      try {
+        const r = await saveSources(values, [...clearSet]);
+        status.textContent = r.changed.length ? `Сохранено: ${r.changed.length} настроек. Источники обновлены.` : "Изменений нет.";
+        toast("Настройки источников применены");
+        renderTab();
+      } catch (ex) { toast(ex.message, true); }
+    } }), status));
+  return box;
+}
+
+function renderOnboarding() {
+  const ready = state.connectors.filter((c) => c.status.state === "connected" && !["manual_import", "web_url"].includes(c.name));
+  const box = h("div", { class: "panel" },
+    h("h2", { text: "Начало работы" }),
+    h("p", { class: "muted", text: "База пока пуста. Чтобы найти материалы, подключите источники и выполните поиск." }));
+  box.appendChild(h("h4", { style: { margin: "12px 0 6px" }, text: "1. Уже работают без настройки" }));
+  box.appendChild(h("div", { class: "chips" }, ready.length
+    ? ready.map((c) => h("span", { class: "pill" }, statusIcon("connected", "подключён"), c.platform))
+    : h("span", { class: "muted small", text: "нет — добавьте источники ниже" })));
+  box.appendChild(h("h4", { style: { margin: "14px 0 6px" }, text: "2. Добавьте публичные Telegram-каналы для наблюдения" }));
+  if (can("manage_settings")) {
+    const ta = h("textarea", { rows: 4, placeholder: "@channel или https://t.me/channel — по одному на строку" });
+    const msg = h("span", { class: "small muted" });
+    box.append(ta, h("div", { class: "row", style: { marginTop: "6px" } },
+      h("button", { class: "btn primary", text: "Сохранить каналы", onclick: async () => {
+        if (!ta.value.trim()) return;
+        try {
+          const current = (await api.get("/api/settings/sources")).groups.flatMap((g) => g.fields).find((f) => f.name === "DOZOR_TELEGRAM_CHANNELS");
+          const merged = [current && current.value, ta.value].filter(Boolean).join("\n");
+          await saveSources({ DOZOR_TELEGRAM_CHANNELS: merged });
+          msg.textContent = "Каналы сохранены — Telegram подключён.";
+          ta.value = "";
+          toast("Telegram-каналы добавлены");
+        } catch (ex) { toast(ex.message, true); }
+      } }), msg),
+      h("p", { class: "small muted", text: "Можно без списка: укажите ссылку на канал в поле «Ссылка на материал или публичный канал» в панели поиска." }));
+    box.appendChild(h("h4", { style: { margin: "14px 0 6px" }, text: "3. При необходимости — ключи официальных API" }));
+    box.appendChild(h("p", { class: "small muted", text: "VK, YouTube, Instagram, Threads, TikTok, Twitch, Discord, X, Bluesky, второй классификатор (LLM)." }));
+    box.appendChild(h("button", { class: "btn", text: "Открыть настройки источников", onclick: openSourceSettings }));
+  } else {
+    box.appendChild(h("p", { class: "small muted", text: "Источники подключает администратор (Администрирование → Источники и ключи доступа)." }));
+  }
+  box.appendChild(h("h4", { style: { margin: "14px 0 6px" }, text: "4. Выполните поиск" }));
+  box.appendChild(h("p", { class: "small", text: "Введите слово в панели «Поиск» — например, «убить» — и нажмите «Найти». Слово автоматически ищется на 16 языках с транслитерацией. Можно выбрать тему вместо слов." }));
+  return box;
+}
+
 async function renderAdmin(c) {
-  const [ret, users] = await Promise.all([api.get("/api/settings/retention"), can("manage_users") ? api.get("/api/users") : []]);
+  const [ret, users, src] = await Promise.all([
+    api.get("/api/settings/retention"), can("manage_users") ? api.get("/api/users") : [], api.get("/api/settings/sources"),
+  ]);
   clear(c);
+  c.appendChild(renderSourceSettings(src));
   const inputs = {};
   const retTable = h("div", { class: "stack" }, Object.entries(ret.labels).map(([k, label]) => {
     inputs[k] = h("input", { type: "number", min: 1, max: 3650, value: ret.values[k], style: { width: "110px" } });
     return h("label", { class: "row" }, h("span", { class: "grow", text: label }), inputs[k], h("span", { class: "small muted", text: "дней" }));
   }));
-  c.appendChild(h("div", { class: "panel" }, h("h3", { text: "Сроки хранения данных" }),
+  c.appendChild(h("div", { class: "panel", style: { marginTop: "12px" } }, h("h3", { text: "Сроки хранения данных" }),
     h("p", { class: "small muted", text: "Данные с истёкшим сроком удаляются автоматически каждый час (кроме карточек с legal hold). Сокращайте сроки до минимально необходимых." }),
     retTable,
     h("div", { class: "row", style: { marginTop: "10px" } },
@@ -925,7 +1038,7 @@ async function renderAdmin(c) {
         toast(`Удалено карточек: ${r.incidents}, поисков: ${r.searches}, записей журнала: ${r.audit_entries}`);
         refresh();
       } }) : null,
-      h("button", { class: "btn", text: "Загрузить демо-данные", onclick: async () => {
+      !state.meta.demo_enabled ? null : h("button", { class: "btn", text: "Загрузить демо-данные", onclick: async () => {
         const r = await api.post("/api/demo/load");
         toast(`Демо: сохранено карточек ${r.counts.stored}`);
         refresh();
@@ -1008,7 +1121,7 @@ function openSearchOverlay(searchId, warnings) {
     r.icon = ic;
     r.row.classList.toggle("running", next === "running");
     if (message && status !== "warn") r.msg.textContent = message;
-    if (status === "warn") r.warned = true;
+    if (status === "warn" || (status === "error" && st === "fetch")) r.warned = true;
     if (elapsed !== undefined) r.time.textContent = `${elapsed.toFixed(1)} с`;
   }
 

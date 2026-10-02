@@ -75,6 +75,18 @@ class SearchPlan:
     max_requests: int = 12
     max_items: int = 300
 
+    def before_start(self, published_iso: str | None) -> bool:
+        """Материал опубликован раньше начала периода поиска."""
+        if not published_iso or not self.date_from:
+            return False
+        try:
+            dt = datetime.fromisoformat(published_iso.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt < self.date_from
+
     def in_range(self, published_iso: str | None) -> bool:
         if not published_iso:
             return True

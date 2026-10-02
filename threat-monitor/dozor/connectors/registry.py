@@ -48,9 +48,11 @@ CONNECTOR_CLASSES: list[type[Connector]] = [
     MaxConnector,
     WhatsAppConnector,
     ManualImportConnector,
-    DemoConnector,
 ]
 
 
 def build_connectors(settings) -> dict[str, Connector]:
-    return {cls.name: cls(settings) for cls in CONNECTOR_CLASSES}
+    classes = list(CONNECTOR_CLASSES)
+    if getattr(settings, "demo_enabled", False):
+        classes.append(DemoConnector)  # учебный режим: вымышленные материалы
+    return {cls.name: cls(settings) for cls in classes}

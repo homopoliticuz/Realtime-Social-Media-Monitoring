@@ -63,6 +63,9 @@ class Settings:
     llm_model: str
     llm_effort: str
     cookie_secure: bool
+    demo_enabled: bool
+    env_file: Path
+    telegram_pages: int
     # Списки наблюдения (публичные источники, которые пользователь указал сам)
     telegram_channels: list[str] = field(default_factory=list)
     vk_domains: list[str] = field(default_factory=list)
@@ -78,8 +81,13 @@ class Settings:
         return value if value else None
 
 
+def env_file_path() -> Path:
+    return Path(os.environ.get("DOZOR_ENV_FILE", BASE_DIR / ".env"))
+
+
 def load_settings() -> Settings:
-    _load_dotenv(BASE_DIR / ".env")
+    env_path = env_file_path()
+    _load_dotenv(env_path)
     db_path = Path(os.environ.get("DOZOR_DB_PATH", BASE_DIR / "var" / "dozor.sqlite3"))
     secret = os.environ.get("DOZOR_SECRET") or ""
     if not secret:
@@ -114,12 +122,30 @@ def load_settings() -> Settings:
         llm_model=os.environ.get("DOZOR_LLM_MODEL", "claude-opus-5-5"),
         llm_effort=os.environ.get("DOZOR_LLM_EFFORT", "medium"),
         cookie_secure=_bool("DOZOR_COOKIE_SECURE", False),
+        # Учебный режим с вымышленными материалами. В рабочем режиме выключен.
+        demo_enabled=_bool("DOZOR_DEMO", False),
+        env_file=env_path,
+        telegram_pages=max(1, min(_int("DOZOR_TELEGRAM_PAGES", 2), 10)),
         telegram_channels=_list("DOZOR_TELEGRAM_CHANNELS"),
         vk_domains=_list("DOZOR_VK_DOMAINS"),
         rss_feeds=_list("DOZOR_RSS_FEEDS"),
-        mastodon_instances=_list("DOZOR_MASTODON_INSTANCES"),
+        mastodon_instances=_list("DOZOR_MASTODON_INSTANCES") if "DOZOR_MASTODON_INSTANCES" in os.environ else ["mastodon.social"],
         twitch_channels=_list("DOZOR_TWITCH_CHANNELS"),
         discord_channel_ids=_list("DOZOR_DISCORD_CHANNEL_IDS"),
         youtube_channel_ids=_list("DOZOR_YOUTUBE_CHANNEL_IDS"),
         twitch_chat_capture_seconds=_int("DOZOR_TWITCH_CHAT_CAPTURE_SECONDS", 0),
     )
+
+
+def refresh_settings(settings: Settings) -> Settings:
+    """Перечитывает переменные окружения в существующий объект настроек.
+
+    Коннекторы держат ссылку на этот объект, поэтому новые списки
+    источников и ключи применяются без перезапуска сервера.
+    """
+    fresh = load_settings()
+    for name in ("telegram_channels", "vk_domains", "rss_feeds", "mastodon_instances", "twitch_channels",
+                 "discord_channel_ids", "youtube_channel_ids", "twitch_chat_capture_seconds", "llm_enabled",
+                 "llm_model", "llm_effort", "telegram_pages", "max_requests_per_connector"):
+        setattr(settings, name, getattr(fresh, name))
+    return settings

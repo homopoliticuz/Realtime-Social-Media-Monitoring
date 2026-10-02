@@ -244,12 +244,13 @@ def test_unconfigured_sources_are_not_polled_and_errors_are_shown(client):
     plan = next(e for e in status["events"] if e["stage"] == "plan" and e["status"] == "done")
     actions = {p["connector"]: p["action"] for p in plan["plan"]}
     # Без ключей и списков наблюдения источники не опрашиваются и не изображаются охваченными
-    for name in ("vk", "youtube", "threads", "instagram", "x", "discord", "telegram_web", "mastodon", "rss"):
+    for name in ("vk", "youtube", "threads", "instagram", "x", "discord", "telegram_web", "rss"):
         assert actions[name].startswith("пропущен"), (name, actions[name])
     for name in ("signal", "max", "facebook", "odnoklassniki", "tiktok"):
         assert actions[name].startswith("пропущен")
-    # Bluesky допускает анонимный доступ — опрашивается, ошибка подключения показана
-    assert "bluesky" in plan["active"]
+    # Bluesky и Mastodon (mastodon.social по умолчанию) работают без ключей — опрашиваются,
+    # ошибка подключения показана
+    assert "bluesky" in plan["active"] and "mastodon" in plan["active"]
     done = status["events"][-1]
     assert "Bluesky" in done["coverage"]["failed"]
     assert any(e["status"] == "error" and e.get("connector") == "bluesky" for e in status["events"])
