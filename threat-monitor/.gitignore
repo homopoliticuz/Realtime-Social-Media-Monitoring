@@ -6,3 +6,5 @@ __pycache__/
 *.sqlite3-*
 *.session
 .pytest_cache/
+.venv/
+ПАРОЛИ.txt

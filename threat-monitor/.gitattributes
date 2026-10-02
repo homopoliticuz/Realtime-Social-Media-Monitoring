@@ -1,0 +1,3 @@
+# .bat должен храниться с окончаниями строк CRLF, иначе cmd.exe ломает метки
+*.bat -text
+*.txt text eol=crlf
