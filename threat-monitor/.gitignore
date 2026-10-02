@@ -1,0 +1,8 @@
+var/
+.env
+__pycache__/
+*.pyc
+*.sqlite3
+*.sqlite3-*
+*.session
+.pytest_cache/
